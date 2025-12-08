@@ -1,0 +1,1 @@
+To train a acoustic vad similar to silero and ten, adding semantic features in future.
