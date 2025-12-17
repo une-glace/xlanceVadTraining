@@ -5,3 +5,14 @@ __pycache__/
 checkpoints/
 .DS_Store
 .vscode/
+
+# Datasets
+WenetSpeech_16k/
+musan_16k/
+*.wav
+*.flac
+*.mp3
+*.opus
+
+# File Lists (if you don't want to track them)
+*.scp
