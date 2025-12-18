@@ -6,8 +6,8 @@ import os
 
 def main():
     parser = argparse.ArgumentParser(description="Audition tool for VAD dataset")
-    parser.add_argument("--speech_scp", type=str, default="speech.scp")
-    parser.add_argument("--noise_scp", type=str, default="noise.scp")
+    parser.add_argument("--speech_scp", type=str, default="WenetSpeech_16k/wav.scp")
+    parser.add_argument("--noise_scp", type=str, default="musan_16k/wav.scp")
     parser.add_argument("--output", type=str, default="audition_sample.wav")
     parser.add_argument("--count", type=int, default=1, help="Number of samples to generate")
     args = parser.parse_args()
