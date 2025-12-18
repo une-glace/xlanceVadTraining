@@ -209,13 +209,10 @@ class SyntheticVADDataset(Dataset):
                 end_idx = start_idx + speech_len_samples
                 
                 # Superimpose
-                # We add scaled noise to speech? Or speech to noise?
-                # Standard: Mixed = Speech + Scale * Noise. 
-                # But here we pasted Speech INTO Noise.
-                # Let's just add them.
+                # Resize noise to match the desired SNR
+                mixed = noise_chunk.clone() * scale
                 
-                mixed = noise_chunk.clone() * 0.1 # Reduce background volume a bit
-                # Add speech
+                # Add speech to the noise background
                 mixed[:, start_idx:end_idx] += speech_chunk
                 
                 if self.verbose and retry == 0:
