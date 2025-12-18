@@ -126,23 +126,42 @@ class SyntheticVADDataset(Dataset):
         
         speech_len_samples = speech_chunk.shape[1]
         
-        # 3. Mix
-        snr_db = random.uniform(5, 20)
-        speech_power = speech_chunk.norm(p=2)
-        noise_power = noise_chunk.norm(p=2)
+        # 3. Mix Strategy
+        mix_type = random.random()
         
-        if noise_power == 0:
-            scale = 0
+        if mix_type < 0.1:
+            # === Pure Noise ===
+            mixed = noise_chunk
+            snr_db = -999
+        
+        elif mix_type < 0.2:
+            # === Pure Speech ===
+            mixed = torch.zeros(1, self.target_len)
+            max_start = self.target_len - speech_len_samples
+            if max_start < 0: max_start = 0
+            start_idx = random.randint(0, max_start)
+            end_idx = start_idx + speech_len_samples
+            mixed[:, start_idx:end_idx] = speech_chunk
+            snr_db = 999
+            
         else:
-            scale = math.pow(10, -snr_db / 20) * (speech_power / noise_power)
-        
-        max_start = self.target_len - speech_len_samples
-        if max_start < 0: max_start = 0
-        start_idx = random.randint(0, max_start)
-        end_idx = start_idx + speech_len_samples
-        
-        mixed = noise_chunk.clone() * 0.1
-        mixed[:, start_idx:end_idx] += speech_chunk
+            # === Mixed ===
+            snr_db = random.uniform(5, 20)
+            speech_power = speech_chunk.norm(p=2)
+            noise_power = noise_chunk.norm(p=2)
+            
+            if noise_power == 0:
+                scale = 0
+            else:
+                scale = math.pow(10, -snr_db / 20) * (speech_power / noise_power)
+            
+            max_start = self.target_len - speech_len_samples
+            if max_start < 0: max_start = 0
+            start_idx = random.randint(0, max_start)
+            end_idx = start_idx + speech_len_samples
+            
+            mixed = noise_chunk.clone() * scale
+            mixed[:, start_idx:end_idx] += speech_chunk
         
         print(f"Audition Sample: Speech={os.path.basename(speech_path)}, Noise={os.path.basename(noise_path)}, SNR={snr_db:.2f}dB")
         
@@ -154,113 +173,129 @@ class SyntheticVADDataset(Dataset):
             try:
                 t0 = time.time()
                 
-                # 1. Select Noise (Background)
-                noise_path = random.choice(self.noise_files)
-                # Optimize: Only load the length we need
-                noise_wav = self._load_audio(noise_path, target_chunk_len=self.target_len)
-                if noise_wav is None: continue
+                # 1. Decide Mix Strategy first
+                # 10% Pure Noise (No speech)
+                # 10% Pure Speech (No noise)
+                # 80% Mixed (SNR 5-20dB)
+                mix_type = random.random()
                 
-                t1 = time.time()
-                if self.verbose and retry == 0:
-                    print(f"[Dataset] Loaded Noise ({t1-t0:.3f}s): {os.path.basename(noise_path)}")
+                noise_chunk = None
+                speech_chunk = None
+                mixed = None
+                start_idx = 0
+                end_idx = 0
+                snr_db = 0
                 
-                # Crop Noise to target length (Background base)
-                noise_chunk = self._get_random_chunk(noise_wav, self.target_len)
-                
-                # 2. Select Speech (Foreground)
-                speech_path = random.choice(self.speech_files)
-                # Optimize: Only load roughly what we might need (max target_len)
-                # We refine the length later
-                speech_wav = self._load_audio(speech_path, target_chunk_len=self.target_len)
-                if speech_wav is None: continue
-                
-                t2 = time.time()
-                if self.verbose and retry == 0:
-                    print(f"[Dataset] Loaded Speech ({t2-t1:.3f}s): {os.path.basename(speech_path)}")
+                # === Case A: Pure Noise (10%) ===
+                if mix_type < 0.1:
+                    noise_path = random.choice(self.noise_files)
+                    noise_wav = self._load_audio(noise_path, target_chunk_len=self.target_len)
+                    if noise_wav is None: continue
+                    noise_chunk = self._get_random_chunk(noise_wav, self.target_len)
+                    
+                    mixed = noise_chunk
+                    start_idx = 0
+                    end_idx = 0 # No speech
+                    snr_db = -999
+                    
+                    if self.verbose and retry == 0:
+                        print(f"[Dataset] Pure Noise. {os.path.basename(noise_path)}")
 
-                # Decide speech duration (0.5s to 2.5s)
-                speech_len = speech_wav.shape[1]
-                if speech_len > self.target_len:
-                     # Take a sub-segment of speech
-                     speech_chunk = self._get_random_chunk(speech_wav, random.randint(int(self.sample_rate*0.5), self.target_len))
-                else:
-                     speech_chunk = speech_wav
-                
-                speech_len_samples = speech_chunk.shape[1]
-                
-                # 3. Mix
-                # Create empty canvas with noise
-                # SNR: Signal to Noise Ratio. 
-                # Random SNR between 5dB and 20dB
-                snr_db = random.uniform(5, 20)
-                
-                speech_power = speech_chunk.norm(p=2)
-                noise_power = noise_chunk.norm(p=2)
-                
-                if noise_power == 0:
-                    scale = 0
-                else:
-                    scale = math.pow(10, -snr_db / 20) * (speech_power / noise_power)
-                
-                # Place speech randomly within the noise chunk
-                max_start = self.target_len - speech_len_samples
-                if max_start < 0: max_start = 0
-                start_idx = random.randint(0, max_start)
-                end_idx = start_idx + speech_len_samples
-                
-                # Superimpose
-                # Resize noise to match the desired SNR
-                mixed = noise_chunk.clone() * scale
-                
-                # Add speech to the noise background
-                mixed[:, start_idx:end_idx] += speech_chunk
-                
-                if self.verbose and retry == 0:
-                    print(f"[Dataset] Mixed with SNR {snr_db:.1f}dB. Total prep time: {time.time()-t0:.3f}s")
+                # === Case B: Pure Speech (10%) ===
+                elif mix_type < 0.2:
+                    speech_path = random.choice(self.speech_files)
+                    speech_wav = self._load_audio(speech_path, target_chunk_len=self.target_len)
+                    if speech_wav is None: continue
+                    
+                    # Process speech chunk
+                    speech_len = speech_wav.shape[1]
+                    if speech_len > self.target_len:
+                         speech_chunk = self._get_random_chunk(speech_wav, random.randint(int(self.sample_rate*0.5), self.target_len))
+                    else:
+                         speech_chunk = speech_wav
+                    
+                    speech_len_samples = speech_chunk.shape[1]
+                    
+                    # Create canvas
+                    mixed = torch.zeros(1, self.target_len)
+                    max_start = self.target_len - speech_len_samples
+                    if max_start < 0: max_start = 0
+                    start_idx = random.randint(0, max_start)
+                    end_idx = start_idx + speech_len_samples
+                    
+                    mixed[:, start_idx:end_idx] = speech_chunk
+                    snr_db = 999
+                    
+                    if self.verbose and retry == 0:
+                        print(f"[Dataset] Pure Speech. {os.path.basename(speech_path)}")
 
+                # === Case C: Mixed (80%) ===
+                else:
+                    # Load both
+                    noise_path = random.choice(self.noise_files)
+                    noise_wav = self._load_audio(noise_path, target_chunk_len=self.target_len)
+                    if noise_wav is None: continue
+                    noise_chunk = self._get_random_chunk(noise_wav, self.target_len)
+                    
+                    speech_path = random.choice(self.speech_files)
+                    speech_wav = self._load_audio(speech_path, target_chunk_len=self.target_len)
+                    if speech_wav is None: continue
+                    
+                    # Process speech chunk
+                    speech_len = speech_wav.shape[1]
+                    if speech_len > self.target_len:
+                         speech_chunk = self._get_random_chunk(speech_wav, random.randint(int(self.sample_rate*0.5), self.target_len))
+                    else:
+                         speech_chunk = speech_wav
+                    
+                    speech_len_samples = speech_chunk.shape[1]
+                    
+                    # SNR and Mixing
+                    snr_db = random.uniform(5, 20)
+                    speech_power = speech_chunk.norm(p=2)
+                    noise_power = noise_chunk.norm(p=2)
+                    
+                    if noise_power == 0:
+                        scale = 0
+                    else:
+                        scale = math.pow(10, -snr_db / 20) * (speech_power / noise_power)
+                    
+                    max_start = self.target_len - speech_len_samples
+                    if max_start < 0: max_start = 0
+                    start_idx = random.randint(0, max_start)
+                    end_idx = start_idx + speech_len_samples
+                    
+                    mixed = noise_chunk.clone() * scale
+                    mixed[:, start_idx:end_idx] += speech_chunk
+                    
+                    if self.verbose and retry == 0:
+                        print(f"[Dataset] Mixed SNR {snr_db:.1f}dB. S:{os.path.basename(speech_path)} N:{os.path.basename(noise_path)}")
+
+                # === Common Processing: Label & Feature ===
+                
                 # 4. Generate Label
-                # Resolution: The model output time dimension is reduced by 2 (MaxPool stride 2).
-                # MelSpectrogram hop_length=160 (10ms).
-                # Total frames = target_len / 160.
-                # Model output frames = Total frames / 2.
-                
-                total_frames = int(self.target_len / 160) + 1 # +1 usually due to center=True in STFT
-                # Correction: let's verify feature shape later. 
-                # For 3s (48000 samples), hop 160 -> 300 frames.
-                # Model output -> 150 frames.
-                
-                # Construct frame-level label
-                # We need to map sample indices to frame indices.
-                # Frame index i covers samples around i * hop_length.
-                
-                label_len = total_frames // 2 # Because of MaxPool in model
+                total_frames = int(self.target_len / 160) + 1 
+                label_len = total_frames // 2 
                 label = torch.zeros(label_len, 1)
                 
-                # Determine active frames
-                # Effective stride for the label is hop_length * 2 = 320 samples (20ms)
-                effective_stride = 320
+                effective_stride = 320 # hop_length * 2
                 
-                start_frame = int(start_idx / effective_stride)
-                end_frame = int(end_idx / effective_stride)
-                
-                if end_frame >= label_len: end_frame = label_len
-                
-                label[start_frame:end_frame] = 1.0
+                # Only mark ones if we have speech (end_idx > 0)
+                if end_idx > 0:
+                    start_frame = int(start_idx / effective_stride)
+                    end_frame = int(end_idx / effective_stride)
+                    if end_frame >= label_len: end_frame = label_len
+                    label[start_frame:end_frame] = 1.0
                 
                 # 5. Extract Features
-                # Input: [1, Samples] -> [1, 80, Frames]
-                # Remove channel dim [80, Frames]
                 feature = self.mel_spectrogram(mixed).squeeze(0) 
                 
-                # Fix Feature/Label alignment
-                # MelSpec sometimes produces +1 frame depending on padding.
-                # We force it to be consistent or trim.
+                # Fix Alignment
                 if feature.shape[1] % 2 != 0:
                     feature = feature[:, :-1]
                     
                 curr_label_len = feature.shape[1] // 2
                 if label.shape[0] != curr_label_len:
-                    # Resize label to match actual feature size
                     new_label = torch.zeros(curr_label_len, 1)
                     min_len = min(curr_label_len, label.shape[0])
                     new_label[:min_len] = label[:min_len]
