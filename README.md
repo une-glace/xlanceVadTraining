@@ -1,3 +1,4 @@
+
 # XVAD: 基于合成训练的轻量级声学 VAD
 
 本项目实现了一个基于 **合成数据生成 (Synthetic Data Generation)** 训练的轻量级语音活动检测 (VAD) 模型。它在训练过程中动态混合纯净语音（如 WenetSpeech）和背景噪声（如 MUSAN），无需人工标注的时间戳。
