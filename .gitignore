@@ -2,7 +2,6 @@ wandb/
 __pycache__/
 *.pyc
 *.pth
-checkpoints/
 .DS_Store
 .vscode/
 
