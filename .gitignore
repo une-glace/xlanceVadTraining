@@ -7,6 +7,7 @@ checkpoints/
 .vscode/
 
 # Datasets
+voice-activity-detection-sjtu-spring-2023/
 AVA_Audio/
 *.wav
 *.flac
