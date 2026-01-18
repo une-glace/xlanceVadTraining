@@ -355,6 +355,7 @@ class KaggleVADDataset(Dataset):
         self.frame_size = 0.025
         self.frame_shift = 0.01
         self.items = []
+        self.path_index = self._build_path_index()
         if os.path.exists(label_path):
             with open(label_path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -386,14 +387,20 @@ class KaggleVADDataset(Dataset):
             n_mels=80,
         )
 
+    def _build_path_index(self):
+        index = {}
+        if os.path.exists(self.audio_dir):
+            for root, _, files in os.walk(self.audio_dir):
+                for name in files:
+                    lower = name.lower()
+                    if lower.endswith(".wav") or lower.endswith(".flac"):
+                        key, _ = os.path.splitext(name)
+                        full_path = os.path.join(root, name)
+                        index[key] = full_path
+        return index
+
     def _resolve_audio_path(self, utt_id):
-        cand_wav = os.path.join(self.audio_dir, utt_id + ".wav")
-        if os.path.exists(cand_wav):
-            return cand_wav
-        cand_flac = os.path.join(self.audio_dir, utt_id + ".flac")
-        if os.path.exists(cand_flac):
-            return cand_flac
-        return None
+        return self.path_index.get(utt_id)
 
     def __len__(self):
         return len(self.items)
