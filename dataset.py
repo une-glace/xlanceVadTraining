@@ -92,6 +92,7 @@ class SyntheticVADDataset(Dataset):
         except Exception as e:
             # print(f"Error loading {path}: {e}")
             return None
+    
     def convert_label(self,audio_id,start_time,len):
         segments = self.label[audio_id]["segments"]
         start = torch.tensor([segment["begin_time"]] for segment in segments)
@@ -186,7 +187,7 @@ class SyntheticVADDataset(Dataset):
         # Retry logic in case of bad files
         for retry in range(5):
             try:
-                t0 = time.time()
+                t1 = time.time()
                 
                 # 1. Decide Mix Strategy first
                 # 10% Pure Noise (No speech)
