@@ -7,8 +7,7 @@ checkpoints/
 .vscode/
 
 # Datasets
-WenetSpeech_16k/
-musan_16k/
+AVA_Audio/
 *.wav
 *.flac
 *.mp3

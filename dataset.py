@@ -188,18 +188,24 @@ class SyntheticVADDataset(Dataset):
                 
                 # === Case A: Pure Noise (10%) ===
                 if mix_type < 0.1:
-                    noise_path = random.choice(self.noise_files)
-                    noise_wav = self._load_audio(noise_path, target_chunk_len=self.target_len)
-                    if noise_wav is None: continue
-                    noise_chunk = self._get_random_chunk(noise_wav, self.target_len)
-                    
-                    mixed = noise_chunk
+                    if self.noise_files:
+                        noise_path = random.choice(self.noise_files)
+                        noise_wav = self._load_audio(noise_path, target_chunk_len=self.target_len)
+                        if noise_wav is None: continue
+                        noise_chunk = self._get_random_chunk(noise_wav, self.target_len)
+                        
+                        mixed = noise_chunk
+                        if self.verbose and retry == 0:
+                            print(f"[Dataset] Pure Noise. {os.path.basename(noise_path)}")
+                    else:
+                        # Synthetic Noise
+                        mixed = torch.randn(1, self.target_len) * 0.01
+                        if self.verbose and retry == 0:
+                            print(f"[Dataset] Pure Noise (Synthetic).")
+
                     start_idx = 0
                     end_idx = 0 # No speech
                     snr_db = -999
-                    
-                    if self.verbose and retry == 0:
-                        print(f"[Dataset] Pure Noise. {os.path.basename(noise_path)}")
 
                 # === Case B: Pure Speech (10%) ===
                 elif mix_type < 0.2:
@@ -231,12 +237,7 @@ class SyntheticVADDataset(Dataset):
 
                 # === Case C: Mixed (80%) ===
                 else:
-                    # Load both
-                    noise_path = random.choice(self.noise_files)
-                    noise_wav = self._load_audio(noise_path, target_chunk_len=self.target_len)
-                    if noise_wav is None: continue
-                    noise_chunk = self._get_random_chunk(noise_wav, self.target_len)
-                    
+                    # Speech
                     speech_path = random.choice(self.speech_files)
                     speech_wav = self._load_audio(speech_path, target_chunk_len=self.target_len)
                     if speech_wav is None: continue
@@ -250,26 +251,42 @@ class SyntheticVADDataset(Dataset):
                     
                     speech_len_samples = speech_chunk.shape[1]
                     
+                    # Noise (Conditional)
+                    noise_chunk = None
+                    if self.noise_files:
+                        noise_path = random.choice(self.noise_files)
+                        noise_wav = self._load_audio(noise_path, target_chunk_len=self.target_len)
+                        if noise_wav is not None:
+                            noise_chunk = self._get_random_chunk(noise_wav, self.target_len)
+                    
                     # SNR and Mixing
                     snr_db = random.uniform(5, 20)
                     speech_power = speech_chunk.norm(p=2)
-                    noise_power = noise_chunk.norm(p=2)
-                    
-                    if noise_power == 0:
-                        scale = 0
-                    else:
-                        scale = math.pow(10, -snr_db / 20) * (speech_power / noise_power)
                     
                     max_start = self.target_len - speech_len_samples
                     if max_start < 0: max_start = 0
                     start_idx = random.randint(0, max_start)
                     end_idx = start_idx + speech_len_samples
                     
-                    mixed = noise_chunk.clone() * scale
-                    mixed[:, start_idx:end_idx] += speech_chunk
-                    
-                    if self.verbose and retry == 0:
-                        print(f"[Dataset] Mixed SNR {snr_db:.1f}dB. S:{os.path.basename(speech_path)} N:{os.path.basename(noise_path)}")
+                    if noise_chunk is not None:
+                        noise_power = noise_chunk.norm(p=2)
+                        if noise_power == 0:
+                            scale = 0
+                        else:
+                            scale = math.pow(10, -snr_db / 20) * (speech_power / noise_power)
+                        
+                        mixed = noise_chunk.clone() * scale
+                        mixed[:, start_idx:end_idx] += speech_chunk
+                        
+                        if self.verbose and retry == 0:
+                            print(f"[Dataset] Mixed SNR {snr_db:.1f}dB. S:{os.path.basename(speech_path)} N:{os.path.basename(noise_path)}")
+                    else:
+                        # No noise available
+                        mixed = torch.zeros(1, self.target_len)
+                        mixed[:, start_idx:end_idx] = speech_chunk
+                        snr_db = 999
+                        if self.verbose and retry == 0:
+                            print(f"[Dataset] Mixed (No Added Noise). S:{os.path.basename(speech_path)}")
 
                 # === Common Processing: Label & Feature ===
                 
@@ -310,6 +327,157 @@ class SyntheticVADDataset(Dataset):
 
         # Fallback if all fail
         return torch.randn(80, 300), torch.zeros(150, 1)
+
+import csv
+
+class AVADataset(Dataset):
+    def __init__(self, csv_path, audio_dir, sample_rate=16000, duration=3.0):
+        self.sample_rate = sample_rate
+        self.duration = duration
+        self.target_len = int(sample_rate * duration)
+        self.audio_dir = audio_dir
+        
+        self.segments = []
+        self.valid_files = set()
+        
+        # Load CSV
+        if os.path.exists(csv_path):
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    # Row: video_id, start, end, label
+                    if len(row) < 4: continue
+                    video_id, start, end, label = row
+                    
+                    # Check if audio file exists
+                    audio_path = os.path.join(audio_dir, f"{video_id}.wav")
+                    if not os.path.exists(audio_path):
+                        continue
+                        
+                    self.valid_files.add(audio_path)
+                    
+                    start_sec = float(start)
+                    end_sec = float(end)
+                    
+                    is_speech = 1.0 if "SPEECH" in label and "NO_SPEECH" not in label else 0.0
+                    
+                    self.segments.append({
+                        "path": audio_path,
+                        "start": start_sec,
+                        "end": end_sec,
+                        "label": is_speech
+                    })
+        
+        print(f"[AVADataset] Loaded {len(self.segments)} segments from {len(self.valid_files)} audio files.")
+        
+        # Feature Extractor
+        self.mel_spectrogram = T.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=400,
+            win_length=400,
+            hop_length=160,
+            n_mels=80
+        )
+
+    def __len__(self):
+        return len(self.segments)
+
+    def __getitem__(self, idx):
+        try:
+            item = self.segments[idx]
+            path = item["path"]
+            start_sec = item["start"]
+            end_sec = item["end"]
+            is_speech = item["label"]
+            
+            # Load specific chunk
+            # We rely on torchaudio.load frame_offset
+            # Need to know original sample rate? 
+            # torchaudio.info is cheap? 
+            # To be safe and efficient, we can assume files are 16kHz if we preprocessed them.
+            # But let's use robust loading.
+            
+            info = torchaudio.info(path)
+            orig_sr = info.sample_rate
+            
+            start_frame = int(start_sec * orig_sr)
+            end_frame = int(end_sec * orig_sr)
+            num_frames = end_frame - start_frame
+            
+            if num_frames <= 0:
+                # Fallback
+                return torch.randn(80, 300), torch.zeros(150, 1)
+
+            waveform, sr = torchaudio.load(path, frame_offset=start_frame, num_frames=num_frames)
+            
+            # Resample
+            if sr != self.sample_rate:
+                waveform = torchaudio.functional.resample(waveform, sr, self.sample_rate)
+            
+            # Mono
+            if waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
+            
+            # Pad or Crop to target_len
+            current_len = waveform.shape[1]
+            
+            final_waveform = torch.zeros(1, self.target_len)
+            
+            valid_len = 0
+            
+            if current_len > self.target_len:
+                # Crop (Random)
+                start_crop = random.randint(0, current_len - self.target_len)
+                final_waveform = waveform[:, start_crop:start_crop+self.target_len]
+                valid_len = self.target_len
+            else:
+                # Pad (At start? Center? End?)
+                # Let's put at start for simplicity
+                final_waveform[:, :current_len] = waveform
+                valid_len = current_len
+            
+            # Feature
+            feature = self.mel_spectrogram(final_waveform).squeeze(0)
+            if feature.shape[1] % 2 != 0:
+                feature = feature[:, :-1]
+            
+            # Label
+            # If is_speech is 1, then the valid_len part is 1.
+            # Else 0.
+            
+            total_frames = int(self.target_len / 160) + 1 
+            label_len = total_frames // 2 
+            label = torch.zeros(label_len, 1)
+            
+            if is_speech > 0.5:
+                # Calculate how many frames correspond to valid_len
+                # 160 hop length * 2 (stride) = 320 effective stride for label?
+                # The CRNN architecture usually reduces time dim by 2?
+                # Let's assume the same logic as SyntheticVADDataset
+                # effective_stride = 320
+                
+                effective_stride = 320
+                valid_frames = int(valid_len / effective_stride)
+                if valid_frames > label_len: valid_frames = label_len
+                label[:valid_frames] = 1.0
+            
+            # Fix alignment
+            curr_label_len = feature.shape[1] // 2
+            if label.shape[0] != curr_label_len:
+                new_label = torch.zeros(curr_label_len, 1)
+                min_len = min(curr_label_len, label.shape[0])
+                new_label[:min_len] = label[:min_len]
+                label = new_label
+
+            return feature, label
+
+        except Exception as e:
+            # print(f"Error loading {idx}: {e}")
+            return torch.randn(80, 300), torch.zeros(150, 1)
+
+def get_ava_dataloader(csv_path, audio_dir, batch_size=32):
+    dataset = AVADataset(csv_path, audio_dir)
+    return DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=True)
 
 def get_dataloader(speech_scp, noise_scp, batch_size=32):
     dataset = SyntheticVADDataset(speech_scp, noise_scp)
