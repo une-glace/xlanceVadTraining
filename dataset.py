@@ -7,9 +7,9 @@ import os
 import math
 import time
 import logging
+import csv
 
-# Configure logging to print to console
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 class SyntheticVADDataset(Dataset):
@@ -328,7 +328,125 @@ class SyntheticVADDataset(Dataset):
         # Fallback if all fail
         return torch.randn(80, 300), torch.zeros(150, 1)
 
-import csv
+
+def parse_kaggle_vad_label(line, frame_size: float = 0.025, frame_shift: float = 0.01):
+    frame2time = lambda n: n * frame_shift + frame_size / 2
+    frames = []
+    frame_n = 0
+    for time_pairs in line.split():
+        start, end = map(float, time_pairs.split(","))
+        if end <= start:
+            continue
+        while frame2time(frame_n) < start:
+            frames.append(0)
+            frame_n += 1
+        while frame2time(frame_n) <= end:
+            frames.append(1)
+            frame_n += 1
+    return frames
+
+
+class KaggleVADDataset(Dataset):
+    def __init__(self, label_path, audio_dir, sample_rate=16000, duration=3.0):
+        self.sample_rate = sample_rate
+        self.duration = duration
+        self.target_len = int(sample_rate * duration)
+        self.audio_dir = audio_dir
+        self.frame_size = 0.025
+        self.frame_shift = 0.01
+        self.items = []
+        if os.path.exists(label_path):
+            with open(label_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split(maxsplit=1)
+                    if len(parts) < 2:
+                        continue
+                    utt_id, segs = parts
+                    audio_path = self._resolve_audio_path(utt_id)
+                    if audio_path is None:
+                        continue
+                    labels = parse_kaggle_vad_label(
+                        segs, frame_size=self.frame_size, frame_shift=self.frame_shift
+                    )
+                    self.items.append(
+                        {
+                            "utt": utt_id,
+                            "path": audio_path,
+                            "labels": labels,
+                        }
+                    )
+        logger.info(
+            f"[KaggleVADDataset] Loaded {len(self.items)} items from audio_dir={self.audio_dir}"
+        )
+        self.mel_spectrogram = T.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=400,
+            win_length=400,
+            hop_length=160,
+            n_mels=80,
+        )
+
+    def _resolve_audio_path(self, utt_id):
+        cand_wav = os.path.join(self.audio_dir, utt_id + ".wav")
+        if os.path.exists(cand_wav):
+            return cand_wav
+        cand_flac = os.path.join(self.audio_dir, utt_id + ".flac")
+        if os.path.exists(cand_flac):
+            return cand_flac
+        return None
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx):
+        try:
+            item = self.items[idx]
+            path = item["path"]
+            labels_full = item["labels"]
+            waveform, sr = torchaudio.load(path)
+            if sr != self.sample_rate:
+                waveform = torchaudio.functional.resample(
+                    waveform, sr, self.sample_rate
+                )
+            if waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
+            total_len = waveform.shape[1]
+            if total_len >= self.target_len:
+                max_start = total_len - self.target_len
+                start_sample = random.randint(0, max_start)
+                end_sample = start_sample + self.target_len
+                segment = waveform[:, start_sample:end_sample]
+            else:
+                segment = torch.zeros(1, self.target_len)
+                segment[:, :total_len] = waveform
+                start_sample = 0
+                end_sample = total_len
+            feature = self.mel_spectrogram(segment).squeeze(0)
+            if feature.shape[1] % 2 != 0:
+                feature = feature[:, :-1]
+            feat_frames = feature.shape[1]
+            frame_shift_samples = int(self.sample_rate * self.frame_shift)
+            start_frame = start_sample // frame_shift_samples
+            end_frame = start_frame + feat_frames
+            label_frames = labels_full[start_frame:end_frame]
+            if len(label_frames) < feat_frames:
+                pad_len = feat_frames - len(label_frames)
+                label_frames = label_frames + [0] * pad_len
+            else:
+                label_frames = label_frames[:feat_frames]
+            out_len = feat_frames // 2
+            label = torch.zeros(out_len, 1)
+            for i in range(out_len):
+                a = label_frames[2 * i]
+                b = 0
+                if 2 * i + 1 < feat_frames:
+                    b = label_frames[2 * i + 1]
+                if a or b:
+                    label[i, 0] = 1.0
+            return feature, label
+        except Exception:
+            return torch.randn(80, 300), torch.zeros(150, 1)
+
 
 class AVADataset(Dataset):
     def __init__(self, csv_path, audio_dir, sample_rate=16000, duration=3.0):

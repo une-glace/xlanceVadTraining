@@ -4,9 +4,9 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import ConcatDataset, DataLoader
 from model import XVADModel
-from dataset import AVADataset
-from torch.utils.data import DataLoader
+from dataset import AVADataset, KaggleVADDataset
 import os
 import wandb
 import argparse
@@ -28,9 +28,7 @@ def cleanup_distributed():
     if dist.is_initialized():
         dist.destroy_process_group()
 
-def get_dataloader(csv_path, audio_dir, batch_size, world_size, rank):
-    dataset = AVADataset(csv_path, audio_dir)
-    
+def get_dataloader(dataset, batch_size, world_size, rank):
     sampler = None
     if world_size > 1:
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
@@ -50,6 +48,22 @@ def train():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="kaggle",
+        choices=["kaggle", "ava", "kaggle_ava"],
+    )
+    parser.add_argument(
+        "--kaggle_label",
+        type=str,
+        default="voice-activity-detection-sjtu-spring-2023/vad/data/train_label.txt",
+    )
+    parser.add_argument(
+        "--kaggle_audio_dir",
+        type=str,
+        default="voice-activity-detection-sjtu-spring-2023/vad/wavs",
+    )
     args = parser.parse_args()
 
     global_rank, local_rank, world_size = setup_distributed()
@@ -64,7 +78,11 @@ def train():
             config={
                 "learning_rate": args.lr,
                 "architecture": "CRNN",
-                "dataset": "AVA-Speech",
+                "dataset": (
+                    "Kaggle-VAD"
+                    if args.dataset == "kaggle"
+                    else ("AVA-Speech" if args.dataset == "ava" else "Kaggle+AVA")
+                ),
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
                 "world_size": world_size
@@ -80,33 +98,101 @@ def train():
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
-    csv_path = "ava_speech_labels_v1.csv"
-    audio_dir = "AVA_Audio"
-    if not os.path.exists(csv_path):
-        if is_master:
-            print(f"Error: {csv_path} not found.")
-        cleanup_distributed()
-        return
-
-    if is_master:
-        print("Running sanity check on AVA-Speech dataset (Rank 0)...")
-        import time
-        t0 = time.time()
-        try:
-            test_dataset = AVADataset(csv_path, audio_dir)
-            if len(test_dataset) > 0:
-                _ = test_dataset[0]
-                print(f"Sanity check passed. Single item load time: {time.time()-t0:.4f}s")
-            else:
-                print("Dataset is empty.")
-                print("Please run 'python download_ava.py' to download audio files.")
-        except Exception as e:
-            print(f"Sanity check FAILED: {e}")
-            wandb.finish()
+    if args.dataset == "ava":
+        csv_path = "ava_speech_labels_v1.csv"
+        audio_dir = "AVA_Audio"
+        if not os.path.exists(csv_path):
+            if is_master:
+                print(f"Error: {csv_path} not found.")
             cleanup_distributed()
             return
+        if is_master:
+            print("Running sanity check on AVA-Speech dataset (Rank 0)...")
+            import time
+            t0 = time.time()
+            try:
+                test_dataset = AVADataset(csv_path, audio_dir)
+                if len(test_dataset) > 0:
+                    _ = test_dataset[0]
+                    print(f"Sanity check passed. Single item load time: {time.time()-t0:.4f}s")
+                else:
+                    print("Dataset is empty.")
+                    print("Please run 'python download_ava.py' to download audio files.")
+            except Exception as e:
+                print(f"Sanity check FAILED: {e}")
+                wandb.finish()
+                cleanup_distributed()
+                return
+        train_dataset = AVADataset(csv_path, audio_dir)
+    elif args.dataset == "kaggle":
+        if not os.path.exists(args.kaggle_label):
+            if is_master:
+                print(f"Error: Kaggle label file {args.kaggle_label} not found.")
+            cleanup_distributed()
+            return
+        if not os.path.exists(args.kaggle_audio_dir):
+            if is_master:
+                print(f"Error: Kaggle audio dir {args.kaggle_audio_dir} not found.")
+            cleanup_distributed()
+            return
+        if is_master:
+            print("Running sanity check on Kaggle VAD dataset (Rank 0)...")
+            import time
+            t0 = time.time()
+            try:
+                test_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+                if len(test_dataset) > 0:
+                    _ = test_dataset[0]
+                    print(f"Sanity check passed. Single item load time: {time.time()-t0:.4f}s")
+                else:
+                    print("Kaggle dataset is empty. Please check your audio directory and labels.")
+            except Exception as e:
+                print(f"Kaggle sanity check FAILED: {e}")
+                wandb.finish()
+                cleanup_distributed()
+                return
+        train_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+    else:
+        csv_path = "ava_speech_labels_v1.csv"
+        audio_dir = "AVA_Audio"
+        if not os.path.exists(csv_path):
+            if is_master:
+                print(f"Error: {csv_path} not found.")
+            cleanup_distributed()
+            return
+        if not os.path.exists(args.kaggle_label):
+            if is_master:
+                print(f"Error: Kaggle label file {args.kaggle_label} not found.")
+            cleanup_distributed()
+            return
+        if not os.path.exists(args.kaggle_audio_dir):
+            if is_master:
+                print(f"Error: Kaggle audio dir {args.kaggle_audio_dir} not found.")
+            cleanup_distributed()
+            return
+        if is_master:
+            print("Running sanity check on Kaggle+AVA dataset (Rank 0)...")
+            import time
+            t0 = time.time()
+            try:
+                kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+                ava_ds = AVADataset(csv_path, audio_dir)
+                if len(kaggle_ds) > 0 and len(ava_ds) > 0:
+                    _ = kaggle_ds[0]
+                    _ = ava_ds[0]
+                    print(f"Sanity check passed. Single item load time: {time.time()-t0:.4f}s")
+                else:
+                    print("Kaggle or AVA dataset is empty. Please check your data.")
+            except Exception as e:
+                print(f"Kaggle+AVA sanity check FAILED: {e}")
+                wandb.finish()
+                cleanup_distributed()
+                return
+        kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+        ava_ds = AVADataset(csv_path, audio_dir)
+        train_dataset = ConcatDataset([kaggle_ds, ava_ds])
 
-    train_loader, train_sampler = get_dataloader(csv_path, audio_dir, args.batch_size, world_size, global_rank)
+    train_loader, train_sampler = get_dataloader(train_dataset, args.batch_size, world_size, global_rank)
     
     if is_master:
         print("Starting training...")
