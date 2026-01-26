@@ -57,12 +57,12 @@ def train():
     parser.add_argument(
         "--kaggle_label",
         type=str,
-        default="kaggle/vad/data/train_label.txt",
+        default="/hpc_stor03/public/shared/data/mml/kaggle/vad/data/train_label.txt",
     )
     parser.add_argument(
         "--kaggle_audio_dir",
         type=str,
-        default="kaggle/vad/wavs",  
+        default="/hpc_stor03/public/shared/data/mml/kaggle/vad/wavs",  
     )
     args = parser.parse_args()
 
@@ -79,9 +79,9 @@ def train():
                 "learning_rate": args.lr,
                 "architecture": "CRNN",
                 "dataset": (
-                    "Kaggle-VAD"
-                    if args.dataset == "kaggle"
-                    else ("AVA-Speech" if args.dataset == "ava" else "Kaggle+AVA")
+                    "Kaggle-VAD" if args.dataset == "kaggle"
+                    else ("AVA-Speech" if args.dataset == "ava" 
+                    else "Kaggle+AVA")
                 ),
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
