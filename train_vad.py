@@ -6,7 +6,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import ConcatDataset, DataLoader
 from model import XVADModel
-from dataset import AVADataset, KaggleVADDataset
+from dataset import AVADataset, KaggleVADDataset,SyntheticVADDataset
 import os
 import wandb
 import argparse
@@ -52,7 +52,7 @@ def train():
         "--dataset",
         type=str,
         default="kaggle",
-        choices=["kaggle", "ava", "kaggle_ava"],
+        choices=["kaggle", "ava", "kaggle_ava","wenet"],
     )
     parser.add_argument(
         "--kaggle_label",
@@ -100,7 +100,7 @@ def train():
     
     if args.dataset == "ava":
         csv_path = "ava_speech_labels_v1.csv"
-        audio_dir = "AVA_Audio"
+        audio_dir = "/hpc_stor03/sjtu_home/zhiqiang.yin/project/myvad/xlanceVadTraining/dataset/train-data"
         if not os.path.exists(csv_path):
             if is_master:
                 print(f"Error: {csv_path} not found.")
@@ -152,6 +152,31 @@ def train():
                 cleanup_distributed()
                 return
         train_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+    elif args.dataset=="wenet":
+        wenet_path="wenet_special.json"
+        speech_scp,nosie_scp="speech.scp","nosie.scp"
+        if not os.path.exists(wenet_path):
+            print("please run prepared_label.py to get label")
+            cleanup_distributed()
+            return
+        if is_master:
+            print("Running sanity check on wenet dataset (Rank 0)...")
+            import time
+            t0 = time.time()
+            try:
+                test_dataset = SyntheticVADDataset(speech_scp=speech_scp,noise_scp=nosie_scp,label_path=wenet_path)
+                if len(test_dataset) > 0:
+                    _ = test_dataset[0]
+                    print(f"Sanity check passed. Single item load time: {time.time()-t0:.4f}s")
+                else:
+                    print("Dataset is empty.")
+                    print("Please run 'python download_ava.py' to download audio files.")
+            except Exception as e:
+                print(f"Sanity check FAILED: {e}")
+                wandb.finish()
+                cleanup_distributed()
+                return
+        train_dataset = SyntheticVADDataset(speech_scp, nosie_scp,wenet_path)        
     else:
         csv_path = "ava_speech_labels_v1.csv"
         audio_dir = "AVA_Audio"
