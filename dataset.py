@@ -1,3 +1,4 @@
+from typing import Any
 import torch
 import torchaudio
 import torchaudio.transforms as T
@@ -9,6 +10,7 @@ import math
 import time
 import logging
 import csv
+from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -489,152 +491,133 @@ class KaggleVADDataset(Dataset):
 
 
 class AVADataset(Dataset):
-    def __init__(self, csv_path, audio_dir, sample_rate=16000, duration=3.0):
+    def __init__(self, lab_dir, audio_dir, sample_rate=16000, duration=3.0):
         self.sample_rate = sample_rate
         self.duration = duration
         self.target_len = int(sample_rate * duration)
         self.audio_dir = audio_dir
-        
-        self.segments = []
-        self.valid_files = set()
-        
-        # Load CSV
-        if os.path.exists(csv_path):
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    # Row: video_id, start, end, label
-                    if len(row) < 4: continue
-                    video_id, start, end, label = row
-                    
-                    # Check if audio file exists
-                    audio_path = os.path.join(audio_dir, f"{video_id}.wav")
-                    if not os.path.exists(audio_path):
+        self.frame_shift = 0.01
+        self.items = []
+        spans_per_audio = defaultdict(list)
+
+        if os.path.isdir(lab_dir):
+            for name in os.listdir(lab_dir):
+                if not name.endswith(".lab"):
+                    continue
+                lab_path = os.path.join(lab_dir, name)
+                base = os.path.splitext(name)[0]
+                if "_c_" in base:
+                    video_id = base.split("_c_")[0]
+                else:
+                    video_id = base
+                audio_path = os.path.join(audio_dir, f"{video_id}.wav")
+                if not os.path.exists(audio_path):
+                    continue
+                with open(lab_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) < 3:
+                            continue
+                        start = parts[0]
+                        end = parts[1]
+                        tag = parts[2]
+                        if tag.lower() != "speech":
+                            continue
+                        start_sec = float(start)
+                        end_sec = float(end)
+                        spans_per_audio[audio_path].append((start_sec, end_sec))
+        for audio_path, spans in spans_per_audio.items():
+            try:
+                info = torchaudio.info(audio_path)
+                orig_sr = info.sample_rate
+                total_sec = info.num_frames / float(orig_sr)
+                total_frames = int(total_sec / self.frame_shift) + 1
+                labels = [0] * total_frames
+                for start_sec, end_sec in spans:
+                    s = max(0.0, start_sec)
+                    e = min(total_sec, end_sec)
+                    if e <= s:
                         continue
-                        
-                    self.valid_files.add(audio_path)
-                    
-                    start_sec = float(start)
-                    end_sec = float(end)
-                    
-                    is_speech = 1.0 if "SPEECH" in label and "NO_SPEECH" not in label else 0.0
-                    
-                    self.segments.append({
-                        "path": audio_path,
-                        "start": start_sec,
-                        "end": end_sec,
-                        "label": is_speech
-                    })
-        
-        print(f"[AVADataset] Loaded {len(self.segments)} segments from {len(self.valid_files)} audio files.")
-        
-        # Feature Extractor
+                    start_frame = int(s / self.frame_shift)
+                    end_frame = int(e / self.frame_shift)
+                    if end_frame >= total_frames:
+                        end_frame = total_frames - 1
+                    for i in range(start_frame, end_frame + 1):
+                        labels[i] = 1
+                self.items.append({"path": audio_path, "labels": labels})
+            except Exception:
+                continue
+        logger.info(f"[AVADataset] Loaded {len(self.items)} audio files from {audio_dir}")
         self.mel_spectrogram = T.MelSpectrogram(
             sample_rate=sample_rate,
             n_fft=400,
             win_length=400,
             hop_length=160,
-            n_mels=80
+            n_mels=80,
         )
 
     def __len__(self):
-        return len(self.segments)
+        return len(self.items)
 
     def __getitem__(self, idx):
         try:
-            item = self.segments[idx]
+            item = self.items[idx]
             path = item["path"]
-            start_sec = item["start"]
-            end_sec = item["end"]
-            is_speech = item["label"]
-            
-            # Load specific chunk
-            # We rely on torchaudio.load frame_offset
-            # Need to know original sample rate? 
-            # torchaudio.info is cheap? 
-            # To be safe and efficient, we can assume files are 16kHz if we preprocessed them.
-            # But let's use robust loading.
-            
-            info = torchaudio.info(path)
-            orig_sr = info.sample_rate
-            
-            start_frame = int(start_sec * orig_sr)
-            end_frame = int(end_sec * orig_sr)
-            num_frames = end_frame - start_frame
-            
-            if num_frames <= 0:
-                # Fallback
-                return torch.randn(80, 300), torch.zeros(150, 1)
+            labels_full = item["labels"]
 
-            waveform, sr = torchaudio.load(path, frame_offset=start_frame, num_frames=num_frames)
-            
-            # Resample
+            waveform, sr = torchaudio.load(path)
             if sr != self.sample_rate:
-                waveform = torchaudio.functional.resample(waveform, sr, self.sample_rate)
-            
-            # Mono
+                waveform = torchaudio.functional.resample(
+                    waveform, sr, self.sample_rate
+                )
             if waveform.shape[0] > 1:
                 waveform = torch.mean(waveform, dim=0, keepdim=True)
             
-            # Pad or Crop to target_len
-            current_len = waveform.shape[1]
-            
-            final_waveform = torch.zeros(1, self.target_len)
-            
-            valid_len = 0
-            
-            if current_len > self.target_len:
-                # Crop (Random)
-                start_crop = random.randint(0, current_len - self.target_len)
-                final_waveform = waveform[:, start_crop:start_crop+self.target_len]
-                valid_len = self.target_len
+            total_len = waveform.shape[1]
+            if total_len >= self.target_len:
+                max_start = total_len - self.target_len
+                start_sample = random.randint(0, max_start)
+                end_sample = start_sample + self.target_len
+                segment = waveform[:, start_sample:end_sample]
             else:
-                # Pad (At start? Center? End?)
-                # Let's put at start for simplicity
-                final_waveform[:, :current_len] = waveform
-                valid_len = current_len
+                segment = torch.zeros(1, self.target_len)
+                segment[:, :total_len] = waveform
+                start_sample = 0
+                end_sample = total_len
             
-            # Feature
-            feature = self.mel_spectrogram(final_waveform).squeeze(0)
+            feature = self.mel_spectrogram(segment).squeeze(0)
             if feature.shape[1] % 2 != 0:
                 feature = feature[:, :-1]
-            
-            # Label
-            # If is_speech is 1, then the valid_len part is 1.
-            # Else 0.
-            
-            total_frames = int(self.target_len / 160) + 1 
-            label_len = total_frames // 2 
-            label = torch.zeros(label_len, 1)
-            
-            if is_speech > 0.5:
-                # Calculate how many frames correspond to valid_len
-                # 160 hop length * 2 (stride) = 320 effective stride for label?
-                # The CRNN architecture usually reduces time dim by 2?
-                # Let's assume the same logic as SyntheticVADDataset
-                # effective_stride = 320
-                
-                effective_stride = 320
-                valid_frames = int(valid_len / effective_stride)
-                if valid_frames > label_len: valid_frames = label_len
-                label[:valid_frames] = 1.0
-            
-            # Fix alignment
-            curr_label_len = feature.shape[1] // 2
-            if label.shape[0] != curr_label_len:
-                new_label = torch.zeros(curr_label_len, 1)
-                min_len = min(curr_label_len, label.shape[0])
-                new_label[:min_len] = label[:min_len]
-                label = new_label
+            feat_frames = feature.shape[1]
 
+            frame_shift_samples = int(self.sample_rate * self.frame_shift)
+            start_frame = start_sample // frame_shift_samples
+            end_frame = start_frame + feat_frames
+            label_frames = labels_full[start_frame:end_frame]
+
+            if len(label_frames) < feat_frames:
+                pad_len = feat_frames - len(label_frames)
+                label_frames = label_frames + [0] * pad_len
+            else:
+                label_frames = label_frames[:feat_frames]
+            
+            out_len = feat_frames // 2
+            label = torch.zeros(out_len, 1)
+            for i in range(out_len):
+                a = label_frames[2 * i]
+                b = 0
+                if 2 * i + 1 < feat_frames:
+                    b = label_frames[2 * i + 1]
+                if a or b:
+                    label[i, 0] = 1.0
             return feature, label
-
-        except Exception as e:
-            # print(f"Error loading {idx}: {e}")
+        except Exception:
             return torch.randn(80, 300), torch.zeros(150, 1)
-
-def get_ava_dataloader(csv_path, audio_dir, batch_size=32):
-    dataset = AVADataset(csv_path, audio_dir)
+            
+def get_ava_dataloader(lab_dir, audio_dir, batch_size=32):
+    if not os.path.isdir(audio_dir):
+        raise ValueError(f"Audio directory {audio_dir} does not exist.")
+    dataset = AVADataset(lab_dir, audio_dir)
     return DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=True)
 
 def get_dataloader(speech_scp, noise_scp, batch_size=32):

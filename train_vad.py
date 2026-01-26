@@ -60,9 +60,19 @@ def train():
         default="/hpc_stor03/public/shared/data/mml/kaggle/vad/data/train_label.txt",
     )
     parser.add_argument(
-        "--kaggle_audio_dir",
+        "--kaggle_audio",
         type=str,
         default="/hpc_stor03/public/shared/data/mml/kaggle/vad/wavs",  
+    )
+    parser.add_argument(
+        "--ava_label",
+        type=str,
+        default="/hpc_stor03/public/shared/data/mml/AVAVD/annotations/labs",
+    )
+    parser.add_argument(
+        "--ava_audio",
+        type=str,
+        default="/hpc_stor03/public/shared/data/mml/AVAVD/audios",
     )
     args = parser.parse_args()
 
@@ -99,11 +109,16 @@ def train():
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
     if args.dataset == "ava":
-        csv_path = "ava_speech_labels_v1.csv"
-        audio_dir = "AVA_Audio"
-        if not os.path.exists(csv_path):
+        lab_dir = args.ava_lab_dir
+        audio_dir = args.ava_audio_dir
+        if not os.path.isdir(lab_dir):
             if is_master:
-                print(f"Error: {csv_path} not found.")
+                print(f"Error: AVA lab dir {lab_dir} not found.")
+            cleanup_distributed()
+            return
+        if not os.path.isdir(audio_dir):
+            if is_master:
+                print(f"Error: AVA audio dir {audio_dir} not found.")
             cleanup_distributed()
             return
         if is_master:
@@ -111,19 +126,18 @@ def train():
             import time
             t0 = time.time()
             try:
-                test_dataset = AVADataset(csv_path, audio_dir)
+                test_dataset = AVADataset(lab_dir, audio_dir)
                 if len(test_dataset) > 0:
                     _ = test_dataset[0]
                     print(f"Sanity check passed. Single item load time: {time.time()-t0:.4f}s")
                 else:
                     print("Dataset is empty.")
-                    print("Please run 'python download_ava.py' to download audio files.")
             except Exception as e:
                 print(f"Sanity check FAILED: {e}")
                 wandb.finish()
                 cleanup_distributed()
                 return
-        train_dataset = AVADataset(csv_path, audio_dir)
+        train_dataset = AVADataset(lab_dir, audio_dir)
     elif args.dataset == "kaggle":
         if not os.path.exists(args.kaggle_label):
             if is_master:
@@ -153,11 +167,16 @@ def train():
                 return
         train_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
     else:
-        csv_path = "ava_speech_labels_v1.csv"
-        audio_dir = "AVA_Audio"
-        if not os.path.exists(csv_path):
+        lab_dir = args.ava_lab_dir
+        audio_dir = args.ava_audio_dir
+        if not os.path.isdir(lab_dir):
             if is_master:
-                print(f"Error: {csv_path} not found.")
+                print(f"Error: AVA lab dir {lab_dir} not found.")
+            cleanup_distributed()
+            return
+        if not os.path.isdir(audio_dir):
+            if is_master:
+                print(f"Error: AVA audio dir {audio_dir} not found.")
             cleanup_distributed()
             return
         if not os.path.exists(args.kaggle_label):
@@ -176,7 +195,7 @@ def train():
             t0 = time.time()
             try:
                 kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
-                ava_ds = AVADataset(csv_path, audio_dir)
+                ava_ds = AVADataset(lab_dir, audio_dir)
                 if len(kaggle_ds) > 0 and len(ava_ds) > 0:
                     _ = kaggle_ds[0]
                     _ = ava_ds[0]
@@ -189,7 +208,7 @@ def train():
                 cleanup_distributed()
                 return
         kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
-        ava_ds = AVADataset(csv_path, audio_dir)
+        ava_ds = AVADataset(lab_dir, audio_dir)
         train_dataset = ConcatDataset([kaggle_ds, ava_ds])
 
     train_loader, train_sampler = get_dataloader(train_dataset, args.batch_size, world_size, global_rank)
