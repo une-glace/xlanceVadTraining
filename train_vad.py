@@ -109,8 +109,8 @@ def train():
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
     if args.dataset == "ava":
-        lab_dir = args.ava_lab_dir
-        audio_dir = args.ava_audio_dir
+        lab_dir = args.ava_label
+        audio_dir = args.ava_audio
         if not os.path.isdir(lab_dir):
             if is_master:
                 print(f"Error: AVA lab dir {lab_dir} not found.")
@@ -144,9 +144,9 @@ def train():
                 print(f"Error: Kaggle label file {args.kaggle_label} not found.")
             cleanup_distributed()
             return
-        if not os.path.exists(args.kaggle_audio_dir):
+        if not os.path.exists(args.kaggle_audio):
             if is_master:
-                print(f"Error: Kaggle audio dir {args.kaggle_audio_dir} not found.")
+                print(f"Error: Kaggle audio dir {args.kaggle_audio} not found.")
             cleanup_distributed()
             return
         if is_master:
@@ -154,7 +154,7 @@ def train():
             import time
             t0 = time.time()
             try:
-                test_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+                test_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio)
                 if len(test_dataset) > 0:
                     _ = test_dataset[0]
                     print(f"Sanity check passed. Single item load time: {time.time()-t0:.4f}s")
@@ -165,10 +165,10 @@ def train():
                 wandb.finish()
                 cleanup_distributed()
                 return
-        train_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+        train_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio)
     else:
-        lab_dir = args.ava_lab_dir
-        audio_dir = args.ava_audio_dir
+        lab_dir = args.ava_lab
+        audio_dir = args.ava_audio
         if not os.path.isdir(lab_dir):
             if is_master:
                 print(f"Error: AVA lab dir {lab_dir} not found.")
@@ -184,9 +184,9 @@ def train():
                 print(f"Error: Kaggle label file {args.kaggle_label} not found.")
             cleanup_distributed()
             return
-        if not os.path.exists(args.kaggle_audio_dir):
+        if not os.path.exists(args.kaggle_audio):
             if is_master:
-                print(f"Error: Kaggle audio dir {args.kaggle_audio_dir} not found.")
+                print(f"Error: Kaggle audio dir {args.kaggle_audio} not found.")
             cleanup_distributed()
             return
         if is_master:
@@ -194,7 +194,7 @@ def train():
             import time
             t0 = time.time()
             try:
-                kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+                kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio)
                 ava_ds = AVADataset(lab_dir, audio_dir)
                 if len(kaggle_ds) > 0 and len(ava_ds) > 0:
                     _ = kaggle_ds[0]
@@ -207,7 +207,7 @@ def train():
                 wandb.finish()
                 cleanup_distributed()
                 return
-        kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio_dir)
+        kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio)
         ava_ds = AVADataset(lab_dir, audio_dir)
         train_dataset = ConcatDataset([kaggle_ds, ava_ds])
 
