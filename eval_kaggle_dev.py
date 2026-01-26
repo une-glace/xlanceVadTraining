@@ -9,12 +9,12 @@ checkpoint = "checkpoints/xvad_epoch_1.pth"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 dataset = KaggleVADDataset(
-    "voice-activity-detection-sjtu-spring-2023/vad/data/dev_label.txt",
-    "voice-activity-detection-sjtu-spring-2023/vad/wavs",
+    "kaggle/vad/data/dev_label.txt",
+    "kaggle/vad/wavs",
 )
 loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4)
 
-model = XVADModel().to(device)
+model = XVADModel().to(device)                              
 state_dict = torch.load(checkpoint, map_location=device)
 model.load_state_dict(state_dict)
 model.eval()

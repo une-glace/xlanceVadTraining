@@ -6,8 +6,7 @@ __pycache__/
 .vscode/
 
 # Datasets
-voice-activity-detection-sjtu-spring-2023/
-AVA_Audio/
+kaggle/
 *.wav
 *.flac
 *.mp3
