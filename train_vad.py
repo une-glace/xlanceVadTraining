@@ -183,7 +183,7 @@ def train():
             cleanup_distributed()
             return
     else:
-        lab_dir = args.ava_lab
+        lab_dir = args.ava_label
         audio_dir = args.ava_audio
         if not os.path.isdir(lab_dir):
             if is_master:
