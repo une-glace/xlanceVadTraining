@@ -138,6 +138,12 @@ def train():
                 cleanup_distributed()
                 return
         train_dataset = AVADataset(lab_dir, audio_dir)
+        if len(train_dataset) == 0:
+            if is_master:
+                print("Error: AVA dataset is empty. Please check your lab and audio paths.")
+            wandb.finish()
+            cleanup_distributed()
+            return
     elif args.dataset == "kaggle":
         if not os.path.exists(args.kaggle_label):
             if is_master:
@@ -166,6 +172,12 @@ def train():
                 cleanup_distributed()
                 return
         train_dataset = KaggleVADDataset(args.kaggle_label, args.kaggle_audio)
+        if len(train_dataset) == 0:
+            if is_master:
+                print("Error: Kaggle dataset is empty. Please check your audio directory and labels.")
+            wandb.finish()
+            cleanup_distributed()
+            return
     else:
         lab_dir = args.ava_lab
         audio_dir = args.ava_audio
@@ -209,6 +221,12 @@ def train():
                 return
         kaggle_ds = KaggleVADDataset(args.kaggle_label, args.kaggle_audio)
         ava_ds = AVADataset(lab_dir, audio_dir)
+        if len(kaggle_ds) == 0 or len(ava_ds) == 0:
+            if is_master:
+                print("Error: Kaggle or AVA dataset is empty. Please check your data.")
+            wandb.finish()
+            cleanup_distributed()
+            return
         train_dataset = ConcatDataset([kaggle_ds, ava_ds])
 
     train_loader, train_sampler = get_dataloader(train_dataset, args.batch_size, world_size, global_rank)
