@@ -363,34 +363,26 @@ class SyntheticVADDataset(Dataset):
         # Fallback if all fail
         return torch.randn(80, 300), torch.zeros(150, 1)
 
-
-def parse_kaggle_vad_label(line, frame_size: float = 0.025, frame_shift: float = 0.01):
-    frame2time = lambda n: n * frame_shift + frame_size / 2
-    frames = []
-    frame_n = 0
-    for time_pairs in line.split():
-        start, end = map(float, time_pairs.split(","))
-        if end <= start:
-            continue
-        while frame2time(frame_n) < start:
-            frames.append(0)
-            frame_n += 1
-        while frame2time(frame_n) <= end:
-            frames.append(1)
-            frame_n += 1
-    return frames
-
-
 class KaggleVADDataset(Dataset):
     def __init__(self, label_path, audio_dir, sample_rate=16000, duration=3.0):
         self.sample_rate = sample_rate
         self.duration = duration
         self.target_len = int(sample_rate * duration)
         self.audio_dir = audio_dir
-        self.frame_size = 0.025
         self.frame_shift = 0.01
         self.items = []
-        self.path_index = self._build_path_index()
+        path_index = {}
+
+        if os.path.exists(self.audio_dir):
+            for root, _, files in os.walk(self.audio_dir):
+                for name in files:
+                    lower = name.lower()
+                    if lower.endswith(".wav") or lower.endswith(".flac"):
+                        key, _ = os.path.splitext(name)
+                        full_path = os.path.join(root, name)
+                        path_index[key] = full_path
+        spans_per_utt = defaultdict(list)
+
         if os.path.exists(label_path):
             with open(label_path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -398,19 +390,44 @@ class KaggleVADDataset(Dataset):
                     if len(parts) < 2:
                         continue
                     utt_id, segs = parts
-                    audio_path = self._resolve_audio_path(utt_id)
-                    if audio_path is None:
+                    for pair in segs.split():
+                        try:
+                            start, end = map(float, pair.split(","))
+                        except Exception:
+                            continue
+                        if end <= start:
+                            continue
+                        spans_per_utt[utt_id].append((start, end))
+        for utt_id, spans in spans_per_utt.items():
+            audio_path = path_index.get(utt_id)
+            if audio_path is None:
+                continue
+            try:
+                info = torchaudio.info(audio_path)
+                orig_sr = info.sample_rate
+                total_sec = info.num_frames / float(orig_sr)
+                total_frames = int(total_sec / self.frame_shift) + 1
+                labels = [0] * total_frames
+                for start_sec, end_sec in spans:
+                    s = max(0.0, start_sec)
+                    e = min(total_sec, end_sec)
+                    if e <= s:
                         continue
-                    labels = parse_kaggle_vad_label(
-                        segs, frame_size=self.frame_size, frame_shift=self.frame_shift
-                    )
-                    self.items.append(
-                        {
-                            "utt": utt_id,
-                            "path": audio_path,
-                            "labels": labels,
-                        }
-                    )
+                    start_frame = int(s / self.frame_shift)
+                    end_frame = int(e / self.frame_shift)
+                    if end_frame >= total_frames:
+                        end_frame = total_frames - 1
+                    for i in range(start_frame, end_frame + 1):
+                        labels[i] = 1
+                self.items.append(
+                    {
+                        "utt": utt_id,
+                        "path": audio_path,
+                        "labels": labels,
+                    }
+                )
+            except Exception:
+                continue
         logger.info(
             f"[KaggleVADDataset] Loaded {len(self.items)} items from audio_dir={self.audio_dir}"
         )
@@ -422,21 +439,6 @@ class KaggleVADDataset(Dataset):
             n_mels=80,
         )
 
-    def _build_path_index(self):
-        index = {}
-        if os.path.exists(self.audio_dir):
-            for root, _, files in os.walk(self.audio_dir):
-                for name in files:
-                    lower = name.lower()
-                    if lower.endswith(".wav") or lower.endswith(".flac"):
-                        key, _ = os.path.splitext(name)
-                        full_path = os.path.join(root, name)
-                        index[key] = full_path
-        return index
-
-    def _resolve_audio_path(self, utt_id):
-        return self.path_index.get(utt_id)
-
     def __len__(self):
         return len(self.items)
 
@@ -445,6 +447,7 @@ class KaggleVADDataset(Dataset):
             item = self.items[idx]
             path = item["path"]
             labels_full = item["labels"]
+
             waveform, sr = torchaudio.load(path)
             if sr != self.sample_rate:
                 waveform = torchaudio.functional.resample(
@@ -452,6 +455,7 @@ class KaggleVADDataset(Dataset):
                 )
             if waveform.shape[0] > 1:
                 waveform = torch.mean(waveform, dim=0, keepdim=True)
+
             total_len = waveform.shape[1]
             if total_len >= self.target_len:
                 max_start = total_len - self.target_len
@@ -463,19 +467,23 @@ class KaggleVADDataset(Dataset):
                 segment[:, :total_len] = waveform
                 start_sample = 0
                 end_sample = total_len
+
             feature = self.mel_spectrogram(segment).squeeze(0)
             if feature.shape[1] % 2 != 0:
                 feature = feature[:, :-1]
             feat_frames = feature.shape[1]
+
             frame_shift_samples = int(self.sample_rate * self.frame_shift)
             start_frame = start_sample // frame_shift_samples
             end_frame = start_frame + feat_frames
             label_frames = labels_full[start_frame:end_frame]
+
             if len(label_frames) < feat_frames:
                 pad_len = feat_frames - len(label_frames)
                 label_frames = label_frames + [0] * pad_len
             else:
                 label_frames = label_frames[:feat_frames]
+                
             out_len = feat_frames // 2
             label = torch.zeros(out_len, 1)
             for i in range(out_len):
