@@ -48,6 +48,9 @@ def train():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--lr_step_size", type=int, default=5)
+    parser.add_argument("--lr_gamma", type=float, default=0.1)
     parser.add_argument(
         "--dataset",
         type=str,
@@ -106,7 +109,8 @@ def train():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     
     criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
     
     if args.dataset == "ava":
         lab_dir = args.ava_label
@@ -267,6 +271,7 @@ def train():
                     print(f"Epoch [{epoch+1}/{args.epochs}], Step [{batch_idx}], Loss: {current_loss:.4f}")
         
         avg_loss = total_loss / len(train_loader)
+        scheduler.step()
         
         if is_master:
             print(f"Epoch [{epoch+1}/{args.epochs}] Complete. Average Loss: {avg_loss:.4f}")

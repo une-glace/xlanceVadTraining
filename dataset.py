@@ -381,6 +381,7 @@ class KaggleVADDataset(Dataset):
                         key, _ = os.path.splitext(name)
                         full_path = os.path.join(root, name)
                         path_index[key] = full_path
+        num_audio_files = len(path_index)
         spans_per_utt = defaultdict(list)
 
         if os.path.exists(label_path):
@@ -398,6 +399,7 @@ class KaggleVADDataset(Dataset):
                         if end <= start:
                             continue
                         spans_per_utt[utt_id].append((start, end))
+        num_utts = len(spans_per_utt)
         for utt_id, spans in spans_per_utt.items():
             audio_path = path_index.get(utt_id)
             if audio_path is None:
@@ -429,7 +431,7 @@ class KaggleVADDataset(Dataset):
             except Exception:
                 continue
         logger.info(
-            f"[KaggleVADDataset] Loaded {len(self.items)} items from audio_dir={self.audio_dir}"
+            f"[KaggleVADDataset] Found {num_audio_files} audio files, {num_utts} utts, loaded {len(self.items)} items from audio_dir={self.audio_dir}, label_path={label_path}"
         )
         self.mel_spectrogram = T.MelSpectrogram(
             sample_rate=sample_rate,
