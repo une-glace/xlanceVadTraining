@@ -44,8 +44,8 @@ def evaluate_thresholds(scores, labels, thresholds):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, default="checkpoints/xvad_best.pth")
-    parser.add_argument("--label", type=str, default="kaggle/vad/data/dev_label.txt")
-    parser.add_argument("--audio", type=str, default="kaggle/vad/wavs")
+    parser.add_argument("--label", type=str, default="/hpc_stor03/public/shared/data/mml/kaggle/vad/data/dev_label.txt")
+    parser.add_argument("--audio", type=str, default="/hpc_stor03/public/shared/data/mml/kaggle/vad/wavs")
     parser.add_argument("--batch_size", type=int, default=64)
     args = parser.parse_args()
 
