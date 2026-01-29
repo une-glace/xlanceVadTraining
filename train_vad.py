@@ -43,6 +43,44 @@ def get_dataloader(dataset, batch_size, world_size, rank):
     )
     return dataloader, sampler
 
+
+def evaluate_kaggle_dev(model, criterion, dev_loader, device):
+    was_training = model.training
+    if hasattr(model, "module"):
+        net = model.module
+    else:
+        net = model
+    net.eval()
+    total_loss = 0.0
+    total_batches = 0
+    tp = 0
+    fp = 0
+    fn = 0
+    with torch.no_grad():
+        for features, labels in dev_loader:
+            features = features.to(device)
+            labels = labels.to(device)
+            outputs, _ = net(features)
+            loss = criterion(outputs, labels)
+            total_loss += loss.item()
+            total_batches += 1
+            preds = (outputs >= 0.5).float()
+            tp += ((preds == 1) & (labels == 1)).sum().item()
+            fp += ((preds == 1) & (labels == 0)).sum().item()
+            fn += ((preds == 0) & (labels == 1)).sum().item()
+    if was_training:
+        net.train()
+    if total_batches == 0:
+        return 0.0, 0.0
+    avg_loss = total_loss / total_batches
+    precision = tp / (tp + fp + 1e-8) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn + 1e-8) if (tp + fn) > 0 else 0.0
+    if precision + recall > 0:
+        f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    else:
+        f1 = 0.0
+    return avg_loss, f1
+
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=10)
@@ -61,6 +99,11 @@ def train():
         "--kaggle_label",
         type=str,
         default="/hpc_stor03/public/shared/data/mml/kaggle/vad/data/train_label.txt",
+    )
+    parser.add_argument(
+        "--kaggle_dev_label",
+        type=str,
+        default="/hpc_stor03/public/shared/data/mml/kaggle/vad/data/dev_label.txt",
     )
     parser.add_argument(
         "--kaggle_audio",
@@ -234,7 +277,25 @@ def train():
         train_dataset = ConcatDataset([kaggle_ds, ava_ds])
 
     train_loader, train_sampler = get_dataloader(train_dataset, args.batch_size, world_size, global_rank)
-    
+    dev_loader = None
+    if args.dataset in ["kaggle", "kaggle_ava"]:
+        if os.path.exists(args.kaggle_dev_label):
+            dev_dataset = KaggleVADDataset(args.kaggle_dev_label, args.kaggle_audio)
+            if len(dev_dataset) == 0:
+                if is_master:
+                    print("Warning: Kaggle dev dataset is empty. Skip dev evaluation.")
+            else:
+                dev_loader = DataLoader(
+                    dev_dataset,
+                    batch_size=args.batch_size,
+                    shuffle=False,
+                    num_workers=4,
+                    pin_memory=True,
+                )
+        else:
+            if is_master:
+                print(f"Warning: Kaggle dev label file {args.kaggle_dev_label} not found. Skip dev evaluation.")
+    best_dev_loss = None
     if is_master:
         print("Starting training...")
         
@@ -272,6 +333,22 @@ def train():
         
         avg_loss = total_loss / len(train_loader)
         scheduler.step()
+        
+        dev_loss = None
+        dev_f1 = None
+        if is_master and dev_loader is not None:
+            dev_loss, dev_f1 = evaluate_kaggle_dev(model, criterion, dev_loader, device)
+            print(f"[Dev] Epoch [{epoch+1}/{args.epochs}] loss={dev_loss:.4f}, F1={dev_f1:.4f}")
+            wandb.log({
+                "epoch": epoch + 1,
+                "dev_loss": dev_loss,
+                "dev_f1": dev_f1
+            })
+            if best_dev_loss is None or dev_loss < best_dev_loss:
+                best_dev_loss = dev_loss
+                os.makedirs("checkpoints", exist_ok=True)
+                state_dict_best = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+                torch.save(state_dict_best, "checkpoints/xvad_best.pth")
         
         if is_master:
             print(f"Epoch [{epoch+1}/{args.epochs}] Complete. Average Loss: {avg_loss:.4f}")
